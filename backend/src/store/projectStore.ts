@@ -1,52 +1,46 @@
-import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { JsonArrayStore, JsonStore } from './jsonStore.js';
+import { JsonStore } from './jsonStore.js';
+import { projectPaths } from './projectPaths.js';
 import type { Project, ProjectIndex } from '../types/project.js';
 
-// プロジェクトデータのベースディレクトリ
-const PROJECTS_BASE = process.env.PROJECTS_DIR || path.join(process.cwd(), '..', 'projects');
-
 /**
- * プロジェクト一覧インデックスのストア
+ * 一覧画面用 index.json。
+ * project.json を全部なめなくても一覧が出せるように分けている。
  */
-const indexStore = new JsonStore<ProjectIndex>(
-  path.join(PROJECTS_BASE, 'index.json')
-);
+const indexStore = new JsonStore<ProjectIndex>(projectPaths.projectIndexFile());
 
 /**
- * プロジェクトストア
- * 各プロジェクトの meta/project.json を操作する
+ * Project 本体を扱うストア。
+ * 1 プロジェクト = 1 ディレクトリ + 複数の JSON ファイル、という構成にしている。
  */
 export const projectStore = {
   /**
-   * 全プロジェクト一覧を取得
+   * 一覧取得。
    */
   findAll(): Project[] {
     const index = indexStore.read();
     if (!index || !index.projects.length) return [];
 
-    return index.projects.map(entry => {
-      const store = new JsonStore<Project>(
-        path.join(PROJECTS_BASE, entry.id, 'meta', 'project.json')
-      );
-      return store.read();
-    }).filter((p): p is Project => p !== null);
+    return index.projects
+      .map((entry) => {
+        const store = new JsonStore<Project>(projectPaths.projectFile(entry.id));
+        return store.read();
+      })
+      .filter((project): project is Project => project !== null);
   },
 
   /**
-   * IDでプロジェクトを取得
+   * ID で 1 件取得。
    */
   findById(id: string): Project | null {
-    const store = new JsonStore<Project>(
-      path.join(PROJECTS_BASE, id, 'meta', 'project.json')
-    );
+    const store = new JsonStore<Project>(projectPaths.projectFile(id));
     return store.read();
   },
 
   /**
-   * プロジェクトを新規作成
-   * spec.md §13.2 に準拠したディレクトリ構造も作成する
+   * プロジェクト作成。
+   * spec.md 13.2 のディレクトリ構成と 18 章の JSON ファイルひな形も同時に作る。
    */
   create(name: string, description: string): Project {
     const id = uuidv4();
@@ -62,23 +56,35 @@ export const projectStore = {
       active_version_id: null,
     };
 
-    // spec.md §13.2 準拠のディレクトリ構造を作成
-    const projectDir = path.join(PROJECTS_BASE, id);
-    const dirs = ['input', 'working/index', 'working/chunks', 'working/ast', 'working/callgraph',
-      'working/ui-analysis', 'working/db-analysis', 'working/drafts',
-      'output/md', 'output/puml', 'output/svg', 'output/json',
-      'chat', 'meta'];
+    const projectDir = projectPaths.projectRoot(id);
+    const dirs = [
+      'input',
+      'working/index',
+      'working/chunks',
+      'working/ast',
+      'working/callgraph',
+      'working/ui-analysis',
+      'working/db-analysis',
+      'working/drafts',
+      'output/md',
+      'output/puml',
+      'output/svg',
+      'output/json',
+      'chat',
+      'meta',
+    ];
+
     for (const dir of dirs) {
-      fs.mkdirSync(path.join(projectDir, dir), { recursive: true });
+      fs.mkdirSync(`${projectDir}/${dir}`, { recursive: true });
     }
 
-    // プロジェクトメタ情報を保存
-    const store = new JsonStore<Project>(
-      path.join(projectDir, 'meta', 'project.json')
-    );
-    store.write(project);
+    new JsonStore<Project>(projectPaths.projectFile(id)).write(project);
+    new JsonStore(projectPaths.versionsFile(id)).write([]);
+    new JsonStore(projectPaths.jobsFile(id)).write([]);
+    new JsonStore(projectPaths.artifactsFile(id)).write([]);
+    new JsonStore(projectPaths.evidencesFile(id)).write([]);
+    new JsonStore(projectPaths.chatMessagesFile(id)).write([]);
 
-    // インデックスを更新
     const index = indexStore.read() ?? { projects: [] };
     index.projects.push({
       id,
@@ -92,12 +98,10 @@ export const projectStore = {
   },
 
   /**
-   * プロジェクトを更新
+   * プロジェクト更新。
    */
-  update(id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'status'>>): Project | null {
-    const store = new JsonStore<Project>(
-      path.join(PROJECTS_BASE, id, 'meta', 'project.json')
-    );
+  update(id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'active_version_id'>>): Project | null {
+    const store = new JsonStore<Project>(projectPaths.projectFile(id));
     const project = store.read();
     if (!project) return null;
 
@@ -108,10 +112,9 @@ export const projectStore = {
     };
     store.write(updated);
 
-    // インデックスも更新
     const index = indexStore.read();
     if (index) {
-      const entry = index.projects.find(p => p.id === id);
+      const entry = index.projects.find((item) => item.id === id);
       if (entry) {
         entry.name = updated.name;
         entry.status = updated.status;
@@ -124,19 +127,17 @@ export const projectStore = {
   },
 
   /**
-   * プロジェクトを削除
+   * プロジェクト削除。
    */
   delete(id: string): boolean {
-    const projectDir = path.join(PROJECTS_BASE, id);
+    const projectDir = projectPaths.projectRoot(id);
     if (!fs.existsSync(projectDir)) return false;
 
-    // ディレクトリごと削除
     fs.rmSync(projectDir, { recursive: true, force: true });
 
-    // インデックスから削除
     const index = indexStore.read();
     if (index) {
-      index.projects = index.projects.filter(p => p.id !== id);
+      index.projects = index.projects.filter((item) => item.id !== id);
       indexStore.write(index);
     }
 

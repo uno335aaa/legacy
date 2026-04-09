@@ -1,7 +1,7 @@
-// プロジェクトのステータス
+// Project の状態。spec.md の 18.1 に合わせて管理する。
 export type ProjectStatus = 'created' | 'uploaded' | 'analyzing' | 'completed' | 'failed';
 
-// プロジェクトエンティティ (spec.md §18.1)
+// プロジェクト本体。1 プロジェクト = 1 つの解析単位。
 export interface Project {
   id: string;
   name: string;
@@ -12,7 +12,7 @@ export interface Project {
   active_version_id: string | null;
 }
 
-// プロジェクトバージョン (spec.md §18.2)
+// 取り込んだソース一式のスナップショット情報。
 export interface ProjectVersion {
   id: string;
   project_id: string;
@@ -21,7 +21,7 @@ export interface ProjectVersion {
   created_at: string;
 }
 
-// 解析ジョブ (spec.md §18.3)
+// 解析ジョブの状態。
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type JobPhase =
   | 'ingest'
@@ -44,7 +44,7 @@ export interface AnalysisJob {
   summary: string | null;
 }
 
-// 成果物 (spec.md §18.4)
+// 生成物の拡張子。
 export type ArtifactFormat = 'md' | 'puml' | 'svg' | 'json';
 export type ArtifactType =
   | 'overview'
@@ -72,7 +72,7 @@ export interface Artifact {
   created_at: string;
 }
 
-// チャットメッセージ (spec.md §18.5)
+// チャットの発言種別。
 export type ChatRole = 'user' | 'assistant' | 'system';
 
 export interface ChatMessage {
@@ -84,7 +84,7 @@ export interface ChatMessage {
   created_at: string;
 }
 
-// 推定根拠 (spec.md §18.6 / §13.4.4)
+// 推論の根拠。confidence は 0.0 - 1.0 を想定する。
 export type EvidenceType = 'naming' | 'annotation' | 'import' | 'code_pattern' | 'llm_inference';
 
 export interface Evidence {
@@ -97,12 +97,15 @@ export interface Evidence {
   confidence: number;
 }
 
-// プロジェクト一覧インデックス (spec.md §18.7)
+// 一覧画面用の軽量データ。project.json 全体を毎回読まなくてよいように分けている。
+export interface ProjectIndexEntry {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  updated_at: string;
+}
+
+// projects/index.json の中身。
 export interface ProjectIndex {
-  projects: Array<{
-    id: string;
-    name: string;
-    status: ProjectStatus;
-    updated_at: string;
-  }>;
+  projects: ProjectIndexEntry[];
 }

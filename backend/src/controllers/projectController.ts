@@ -1,12 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { projectStore } from '../store/projectStore.js';
+import { projectVersionStore } from '../store/projectVersionStore.js';
 
 export const projectRouter = Router();
 
-// バリデーションスキーマ
+// Validate request bodies first so the rest of the handler can stay simple.
 const createProjectSchema = z.object({
-  name: z.string().min(1, 'プロジェクト名は必須です').max(100),
+  name: z.string().min(1, 'Project name is required').max(100),
   description: z.string().max(500).default(''),
 });
 
@@ -15,8 +16,15 @@ const updateProjectSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+const createVersionSchema = z.object({
+  label: z.string().min(1, 'Version label is required').max(100),
+  // Store metadata first. The actual upload endpoint can be added next.
+  upload_path: z.string().min(1, 'upload_path is required'),
+});
+
 /**
- * POST /api/projects - プロジェクト新規作成
+ * POST /api/projects
+ * 新しいプロジェクトを作る。
  */
 projectRouter.post('/', (req: Request, res: Response) => {
   const parsed = createProjectSchema.safeParse(req.body);
@@ -31,7 +39,8 @@ projectRouter.post('/', (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/projects - プロジェクト一覧取得
+ * GET /api/projects
+ * プロジェクト一覧を返す。
  */
 projectRouter.get('/', (_req: Request, res: Response) => {
   const projects = projectStore.findAll();
@@ -39,43 +48,88 @@ projectRouter.get('/', (_req: Request, res: Response) => {
 });
 
 /**
- * GET /api/projects/:id - プロジェクト詳細取得
+ * GET /api/projects/:id
+ * プロジェクト 1 件と、その配下の version 一覧をまとめて返す。
  */
 projectRouter.get('/:id', (req: Request, res: Response) => {
-  const project = projectStore.findById(req.params.id);
+  const projectId = String(req.params.id);
+  const project = projectStore.findById(projectId);
   if (!project) {
-    res.status(404).json({ error: 'プロジェクトが見つかりません' });
+    res.status(404).json({ error: 'Project not found' });
     return;
   }
-  res.json(project);
+
+  const versions = projectVersionStore.findAll(project.id);
+  res.json({ project, versions });
 });
 
 /**
- * PATCH /api/projects/:id - プロジェクト更新
+ * PATCH /api/projects/:id
+ * 名前や説明などを更新する。
  */
 projectRouter.patch('/:id', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
   const parsed = updateProjectSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation Error', details: parsed.error.issues });
     return;
   }
 
-  const updated = projectStore.update(req.params.id, parsed.data);
+  const updated = projectStore.update(projectId, parsed.data);
   if (!updated) {
-    res.status(404).json({ error: 'プロジェクトが見つかりません' });
+    res.status(404).json({ error: 'Project not found' });
     return;
   }
+
   res.json(updated);
 });
 
 /**
- * DELETE /api/projects/:id - プロジェクト削除
+ * POST /api/projects/:id/versions
+ * プロジェクト配下に新しい version を作る。
  */
-projectRouter.delete('/:id', (req: Request, res: Response) => {
-  const deleted = projectStore.delete(req.params.id);
-  if (!deleted) {
-    res.status(404).json({ error: 'プロジェクトが見つかりません' });
+projectRouter.post('/:id/versions', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const project = projectStore.findById(projectId);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found' });
     return;
   }
+
+  const parsed = createVersionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation Error', details: parsed.error.issues });
+    return;
+  }
+
+  const version = projectVersionStore.create(project.id, parsed.data.label, parsed.data.upload_path);
+  const updatedProject = projectStore.update(project.id, {
+    status: 'uploaded',
+    active_version_id: version.id,
+  });
+
+  if (!updatedProject) {
+    res.status(500).json({ error: 'Failed to update project metadata' });
+    return;
+  }
+
+  res.status(201).json({
+    project: updatedProject,
+    version,
+  });
+});
+
+/**
+ * DELETE /api/projects/:id
+ * プロジェクトをディレクトリごと削除する。
+ */
+projectRouter.delete('/:id', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const deleted = projectStore.delete(projectId);
+  if (!deleted) {
+    res.status(404).json({ error: 'Project not found' });
+    return;
+  }
+
   res.status(204).send();
 });

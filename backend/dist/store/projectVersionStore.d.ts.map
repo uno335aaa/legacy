@@ -1,0 +1,1 @@
+{"version":3,"file":"projectVersionStore.d.ts","sourceRoot":"","sources":["../../src/store/projectVersionStore.ts"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,qBAAqB,CAAC;AAE1D;;;GAGG;AACH,eAAO,MAAM,mBAAmB;uBACX,MAAM,GAAG,cAAc,EAAE;wBAKxB,MAAM,aAAa,MAAM,GAAG,cAAc,GAAG,SAAS;sBAKxD,MAAM,SAAS,MAAM,cAAc,MAAM,GAAG,cAAc;CAc7E,CAAC"}
