@@ -1,0 +1,7 @@
+# 将来の本格実装で使う候補を先に明示しておく。
+# 今の最小構成では標準ライブラリだけで動くため、install は必須ではない。
+tree-sitter>=0.24.0
+tree-sitter-c>=0.24.1
+tree-sitter-cpp>=0.23.4
+tree-sitter-java>=0.23.5
+pytest>=8.3.0
