@@ -120,6 +120,62 @@
 ワークフロー型だけでは柔軟な探索が弱く、ReAct 型だけでは解析の暴走や粒度不整合が起こりやすい。  
 そのため、フェーズ制御・状態管理・成果物管理はワークフローで行い、個別の探索・再読込・再推論は ReAct 的に実行する構成とする。
 
+### 5.3 3層解析アーキテクチャ
+
+コード解析は以下の3層で段階的に実施する。各層は後の層の入力となり、精度と抽象度が段階的に上がる構成とする。
+
+```text
+Layer 1: 構文解析層（Syntax Layer）
+  ├─ Tree-sitter によるAST構築
+  ├─ シンボル（クラス、関数、変数）の抽出
+  └─ 単一ファイル内の構造情報
+      ↓
+Layer 2: シンボル解決層（Symbol Resolution Layer）
+  ├─ import / include の追跡
+  ├─ ファイル横断の型解決・名前解決
+  ├─ 呼び出し先クラス・メソッドの特定
+  └─ 継承・実装関係の完全解決
+      ↓
+Layer 3: 意味推論層（Semantic Inference Layer）
+  ├─ LLM による責務推定
+  ├─ 処理の意図・ビジネスロジック推定
+  ├─ モジュール境界・レイヤ判定
+  └─ 不明点の推定根拠付き補完
+```
+
+#### Layer 1: 構文解析層
+
+* Tree-sitter を用いて各ファイルの AST を構築する
+* クラス名、メソッド名、引数、戻り値、フィールド宣言を抽出する
+* 単一ファイル内で完結する情報のみを扱う
+* 処理コスト: 低（秒単位）
+
+#### Layer 2: シンボル解決層
+
+* Layer 1 の結果を入力とし、ファイル横断の情報を構築する
+* Java: package + import 文から完全修飾名を構築し、型を解決する
+* C/C++: `#include` チェーンを辿り、ヘッダファイルの定義を集約する
+* 呼び出し関係: `obj.method()` の `obj` の型を解決し、呼出先クラスを特定する
+* 継承・実装: インターフェース経由の呼出しは実装クラスの候補を列挙する
+* 処理コスト: 中（プロジェクト規模に依存）
+* MVP では基本的なシンボル解決（import/include 追跡、フィールド型解決）を実装し、高度な解決（ポリモーフィズム、ジェネリクス等）は将来拡張とする
+
+#### Layer 3: 意味推論層
+
+* Layer 1 + Layer 2 の結果をコンテキストとして LLM に渡す
+* クラスの責務、処理の目的、ビジネスロジックを推定する
+* 全出力に推定根拠（Evidence）と信頼度（confidence）を付与する
+* 処理コスト: 高（LLM API 呼出し回数に依存）
+
+### 5.4 解析精度方針
+
+本システムの出力には「確定情報」と「推定情報」の2種類がある。
+
+* **確定情報**: コードから機械的に抽出した事実（クラス名、メソッドシグネチャ、import 文、SQL 文等）
+* **推定情報**: LLM またはヒューリスティクスにより推定した内容（責務、処理目的、レイヤ判定等）
+
+出力ドキュメントでは、推定情報には必ず `[推定]` マーカーと confidence 値を付与し、確定情報と明確に区別する。
+
 \---
 
 ## 6\. 想定ユースケース
@@ -230,15 +286,21 @@
 
 役割:
 
-* クラス / 構造体 / 関数 / メソッドの抽出
+* クラス / 構造体 / 関数 / メソッドの抽出（Layer 1: 構文解析）
+* ファイル横断のシンボル解決（Layer 2: シンボル解決）
+  * import / include の追跡による型解決
+  * フィールド型の解決による依存関係の特定
+  * 呼び出し先クラス・メソッドの特定
 * 継承 / 実装 / 呼び出し関係の抽出
-* モジュール責務推定
+* モジュール責務推定（Layer 3: LLM 活用）
 
 出力:
 
-* クラス一覧
-* メソッド一覧
-* クラス図用中間データ
+* クラス一覧（シンボル解決済み）
+* メソッド一覧（呼出先解決済み）
+* シンボルテーブル（完全修飾名 → 定義位置のマッピング）
+* クラス図用中間データ（解決済み依存関係含む）
+* 呼び出しグラフ（解決精度付き: 確定 / 候補 / 不明）
 
 #### 8.1.4 Behavior Analysis Agent
 
@@ -293,11 +355,17 @@
 * PlantUML を生成
 * 生成した PlantUML の構文チェックを行い、構文エラーがある場合は LLM に再生成を指示する（最大リトライ回数を設定）
 * 図と文章の相互整合を取る
+* **確定情報と推定情報を区別してマーキングする**
+* **生成物間の一貫性チェックを行う**
+  * クラス一覧のIDセット == クラス図のノードセット
+  * メソッド一覧のIDセット ⊇ CRUD表で参照されるメソッドセット
+  * 不整合があれば警告として出力する
 
 出力:
 
-* 各種 `.md`
+* 各種 `.md`（推定箇所にマーカー付き）
 * 各種 `.puml`（構文検証済み）
+* 一貫性チェック結果
 
 #### 8.1.8 Review / Gap Detection Agent
 
@@ -307,12 +375,14 @@
 * 矛盾検出
 * 推定の信頼度低い箇所の再解析依頼
 * ユーザへの確認質問候補作成
+* **エラーリカバリ判定**: 解析失敗ファイルの一覧と影響範囲を特定する
 
 出力:
 
 * 不足箇所一覧
 * 再解析タスク
 * 根拠不足警告
+* 解析失敗レポート（失敗ファイル一覧、影響範囲、代替推定の有無）
 
 \---
 
@@ -346,6 +416,42 @@
 * 必要成果物が揃った
 * 追加探索で新情報が増えない
 * 上位オーケストレータが打ち切り判断した
+
+### 9.4 LLM コンテキスト管理戦略
+
+大規模プロジェクトでは全ファイルを LLM に渡すことは不可能なため、以下の段階的コンテキスト構築戦略を採用する。
+
+#### 9.4.1 段階的サマリ構築
+
+1. **ファイルインデックス作成**: 全ファイルの「1行サマリ」を作成する（ファイルパス + 主要シンボル + 推定責務）
+2. **全体アーキテクチャ推定**: ファイルインデックスを LLM に渡し、全体のアーキテクチャ・レイヤ構造を推定する
+3. **重要ファイル選定**: アーキテクチャに基づいて、詳細解析の優先度を決定する
+4. **詳細解析**: 選定されたファイルの詳細解析を行う（関連ファイルのコンテキストを付加）
+5. **統合**: 詳細解析結果 + 全体サマリから最終的な設計書を生成する
+
+#### 9.4.2 コンテキスト予算管理
+
+* エージェントごとに LLM 呼出し回数の上限を設定する
+* 1回の LLM 呼出しに含めるソースコードは、トークン上限の 60% 以内とし、残りを指示・出力に充てる
+* 長大なファイルはメソッド単位に分割して処理する
+* 解析済みの中間結果を要約してコンテキストに含めることで、情報の損失を最小化する
+
+#### 9.4.3 関連コード選択
+
+特定のクラス/メソッドを LLM で解析する際、以下の関連情報をコンテキストに含める。
+
+* 解析対象のソースコード全文
+* 同一ファイル内の他メソッド（シグネチャのみ）
+* import / include で参照しているクラスのシグネチャ
+* 呼び出し元メソッドのシグネチャ（最大 5 件）
+* 呼び出し先メソッドの実装（直接呼出しのみ、深さ 1）
+
+### 9.5 エラーリカバリと部分成功
+
+* 各ファイルの解析結果に `status` を付与する: `success` / `partial` / `failed`
+* 一部のファイル解析が失敗しても、成功分で設計書を生成する
+* 失敗ファイルは「解析レポート」としてユーザに通知する
+* 失敗原因の分類: パースエラー / 文字コードエラー / トークン超過 / LLM エラー
 
 \---
 
@@ -504,6 +610,107 @@ interface ModelAdapter {
 * 推定根拠一覧
 * 文書草稿
 
+### 13.4 中間データの構造定義
+
+エージェント間の中間データは JSON 形式で統一する。主要な中間データの構造を以下に定義する。
+
+#### 13.4.1 クラス情報（class\_info.json）
+
+```json
+{
+  "id": "cls_001",
+  "name": "UserService",
+  "fqn": "com.example.service.UserService",
+  "filePath": "src/main/java/com/example/service/UserService.java",
+  "language": "java",
+  "type": "class | interface | enum | struct",
+  "modifiers": ["public"],
+  "superClass": { "name": "BaseService", "fqn": "com.example.base.BaseService", "resolved": true },
+  "interfaces": [{ "name": "IUserService", "fqn": "com.example.api.IUserService", "resolved": true }],
+  "fields": [
+    { "name": "userRepository", "type": "UserRepository", "fqn": "com.example.repo.UserRepository", "resolved": true, "modifiers": ["private"] }
+  ],
+  "methods": ["mtd_001", "mtd_002"],
+  "layer": "Service",
+  "responsibility": "ユーザの登録・更新・削除を管理する [推定]",
+  "confidence": 0.85,
+  "evidences": ["ev_001"],
+  "status": "success"
+}
+```
+
+#### 13.4.2 メソッド情報（method\_info.json）
+
+```json
+{
+  "id": "mtd_001",
+  "name": "createUser",
+  "classId": "cls_001",
+  "filePath": "src/main/java/com/example/service/UserService.java",
+  "lineStart": 25,
+  "lineEnd": 45,
+  "returnType": "User",
+  "parameters": [
+    { "name": "request", "type": "CreateUserRequest" }
+  ],
+  "modifiers": ["public"],
+  "callsTo": [
+    { "methodId": "mtd_010", "callType": "direct", "lineNumber": 32, "resolved": true, "confidence": 1.0 },
+    { "methodId": "mtd_020", "callType": "interface", "lineNumber": 35, "resolved": false, "candidates": ["mtd_021", "mtd_022"], "confidence": 0.6 }
+  ],
+  "calledBy": ["mtd_100"],
+  "dbOperations": ["INSERT:users"],
+  "summary": "ユーザ情報をバリデーションし、DBに登録する [推定]",
+  "confidence": 0.8,
+  "evidences": ["ev_002"]
+}
+```
+
+#### 13.4.3 呼び出し関係（call\_graph.json）
+
+```json
+{
+  "callerId": "mtd_001",
+  "calleeId": "mtd_010",
+  "callType": "direct | interface | virtual | function_pointer | unknown",
+  "lineNumber": 32,
+  "isConditional": false,
+  "resolved": true,
+  "confidence": 1.0
+}
+```
+
+#### 13.4.4 推定根拠（evidence.json）
+
+```json
+{
+  "id": "ev_001",
+  "projectId": "proj_001",
+  "targetId": "cls_001",
+  "evidenceType": "naming | annotation | import | code_pattern | llm_inference",
+  "sourcePath": "src/main/java/com/example/service/UserService.java",
+  "lineRange": [1, 10],
+  "summary": "クラス名 'UserService' + @Service アノテーションから Service 層と判定",
+  "confidence": 0.85
+}
+```
+
+#### 13.4.5 解析ステータス（analysis\_status.json）
+
+```json
+{
+  "fileStatuses": [
+    { "filePath": "src/main/java/...", "status": "success", "symbolCount": 12 },
+    { "filePath": "src/main/c/legacy.c", "status": "partial", "reason": "macro_heavy", "symbolCount": 5 },
+    { "filePath": "src/main/c/broken.c", "status": "failed", "reason": "parse_error", "errorDetail": "..." }
+  ],
+  "totalFiles": 150,
+  "successCount": 140,
+  "partialCount": 8,
+  "failedCount": 2
+}
+```
+
 \---
 
 ## 14\. 解析対象の詳細仕様
@@ -595,6 +802,16 @@ interface ModelAdapter {
 \---
 
 ## 15\. 出力ドキュメント仕様
+
+### 15.0 共通仕様
+
+全出力ドキュメントに以下の共通ルールを適用する。
+
+* 推定情報には `[推定]` マーカーを付与する
+* 推定情報には confidence 値（0.0〜1.0）を付記する（例: `[推定: 0.85]`）
+* コードから機械的に抽出した確定情報にはマーカーを付けない
+* 推定の根拠（Evidence）への参照を脚注として付与する
+* 解析できなかった箇所は `[未解析]` マーカーで明示する
 
 ## 15.1 全体処理概要
 
@@ -975,17 +1192,19 @@ interface ModelAdapter {
 
 ### 20.2 バックエンド
 
-* typescript
+* typescript　
 * Python
+* Vercel AI SDK
 * 設計書作成時のプロンプトテンプレート管理
 * ジョブキュー
 * ファイル管理ストレージ
 
 ### 20.3 解析基盤
 
-* Tree-sitter などの構文解析器
-* ctags / clang 系補助
-* Java Parser 系
+* Tree-sitter などの構文解析器（Layer 1: 構文解析）
+* 自前シンボル解決エンジン（Layer 2: import/include 追跡、型解決）
+* ctags / clang 系補助（Layer 2 の精度向上）
+* Java Parser 系（Layer 2 の精度向上）
 * PlantUML
 * SVG 変換環境
 
@@ -1052,6 +1271,13 @@ interface ModelAdapter {
 * 信頼度と根拠の保持が必須
 * MVP では RDB を使用しない。データはすべて JSON ファイルとしてファイルシステム上で管理する
 * MVP では RAG（Retrieval-Augmented Generation）を使用しない。既存ドキュメント統合は今後の拡張案（§24）とする
+* 静的解析の限界として、以下は解析精度が低下する可能性がある
+  * ポリモーフィズム（インターフェース経由の呼出しは実装候補の列挙にとどまる）
+  * リフレクション / 動的プロキシ
+  * C/C++ のマクロ多用コード（プリプロセス前のコードを解析するため）
+  * DI コンテナによる依存注入（設定ファイルベースの場合）
+  * 関数ポインタ / コールバック経由の呼出し
+* これらの限界箇所は呼び出しグラフ上で `confidence` 値を低く設定し、出力ドキュメントで `[推定]` マーカーを付与して明示する
 
 \---
 
@@ -1065,12 +1291,24 @@ interface ModelAdapter {
 * RAG による既存ドキュメント統合
 * チーム共有コメント機能
 * エクスポート形式拡張
+* **意味解析の高度化**
+  * C/C++ プリプロセス対応（`gcc -E` / `clang -E` 相当の展開後コードの解析）
+  * ポリモーフィズムの高精度解決（DI 設定ファイル解析、実行時型推論）
+  * Language Server Protocol（LSP）連携による型解決精度の向上
+  * clang の libTooling / Java の Eclipse JDT による本格的な意味解析エンジン
+  * 動的解析（テスト実行時のトレース情報）との統合
+* **ユーザフィードバックの構造化**
+  * 推定結果に対するユーザの承認・修正・補足の保持
+  * フィードバックを次回解析に反映するルール管理
+* **解析キャッシュの高度化**
+  * ファイルハッシュベースの Tree-sitter 解析結果キャッシュ
+  * LLM 推論結果のキャッシュ（同一入力に対する再利用）
 
 \---
 
 ## 25\. 実装上の補足指針
 
-* まずは中間構造の設計を優先する
+* まずは中間構造の設計（§13.4 のスキーマ定義）を優先する
 * 文書生成は中間構造からの一方向生成にする
 * エージェント同士で直接ファイル編集させず、オーケストレータ経由にする
 * 解析結果は常に evidence を紐付ける
@@ -1078,6 +1316,17 @@ interface ModelAdapter {
 * UI では「確定情報」と「推定情報」を分けて表示する
 * LLM で生成した PlantUML は必ず構文検証を行い、エラーがあれば LLM にエラー内容を渡して再生成させる（最大 3 回リトライ）
 * データ永続化は JSON ファイルベースとし、ORM / マイグレーションは使用しない
+* **LLM プロンプト設計指針**:
+  * エージェントごとにプロンプトテンプレートを用意し、テンプレートファイルとして管理する
+  * 出力は JSON Schema で構造化出力を強制する（自由文ではなく型付きデータで受け取る）
+  * 解析対象コードだけでなく、関連クラスのシグネチャ・呼出元情報をコンテキストに含める
+  * Few-shot 例をプロンプトに含めて出力品質を安定させる
+  * 推定結果には必ず `confidence` フィールドを出力させる
+* **呼び出しグラフの精度管理**:
+  * 静的解析で解決できた呼出し: `resolved: true, confidence: 1.0`
+  * インターフェース経由で候補が特定できた呼出し: `resolved: false, candidates: [...], confidence: 0.5-0.8`
+  * 解決不能な呼出し（関数ポインタ等）: `resolved: false, confidence: 0.0-0.3`
+* **解析の部分成功を許容する**: 一部ファイルの解析失敗は全体を停止させず、成功分で出力を生成する（§9.5）
 
 \---
 
