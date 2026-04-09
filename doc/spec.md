@@ -161,7 +161,7 @@
 * ドキュメント生成モジュール
 * 図生成モジュール
 * 成果物ストレージ
-* プロジェクト管理DB
+* プロジェクト管理ストア（JSON ファイルベース）
 
 ### 7.2 論理構成
 
@@ -291,12 +291,13 @@
 
 * 中間成果物を Markdown 文書へ整形
 * PlantUML を生成
+* 生成した PlantUML の構文チェックを行い、構文エラーがある場合は LLM に再生成を指示する（最大リトライ回数を設定）
 * 図と文章の相互整合を取る
 
 出力:
 
 * 各種 `.md`
-* 各種 `.puml`
+* 各種 `.puml`（構文検証済み）
 
 #### 8.1.8 Review / Gap Detection Agent
 
@@ -861,7 +862,10 @@ interface ModelAdapter {
 
 ## 18\. 内部データモデル
 
-### 18.1 Project
+本システムでは RDB を使用せず、すべてのデータを JSON ファイルとしてプロジェクトディレクトリ配下に保存する。  
+各エンティティは `/meta/` ディレクトリ内の JSON ファイルとして管理する。
+
+### 18.1 Project（`/meta/project.json`）
 
 * id
 * name
@@ -871,7 +875,7 @@ interface ModelAdapter {
 * updated\_at
 * active\_version\_id
 
-### 18.2 ProjectVersion
+### 18.2 ProjectVersion（`/meta/versions.json`）
 
 * id
 * project\_id
@@ -879,7 +883,7 @@ interface ModelAdapter {
 * upload\_path
 * created\_at
 
-### 18.3 AnalysisJob
+### 18.3 AnalysisJob（`/meta/jobs.json`）
 
 * id
 * project\_id
@@ -890,7 +894,7 @@ interface ModelAdapter {
 * current\_phase
 * summary
 
-### 18.4 Artifact
+### 18.4 Artifact（`/meta/artifacts.json`）
 
 * id
 * project\_id
@@ -900,7 +904,7 @@ interface ModelAdapter {
 * format
 * created\_at
 
-### 18.5 ChatMessage
+### 18.5 ChatMessage（`/chat/messages.json`）
 
 * id
 * project\_id
@@ -909,7 +913,7 @@ interface ModelAdapter {
 * related\_job\_id
 * created\_at
 
-### 18.6 Evidence
+### 18.6 Evidence（`/meta/evidences.json`）
 
 * id
 * project\_id
@@ -918,6 +922,16 @@ interface ModelAdapter {
 * evidence\_type
 * summary
 * confidence
+
+### 18.7 プロジェクト一覧管理（`/projects/index.json`）
+
+全プロジェクトの一覧を管理するインデックスファイル。
+
+* projects\[\]
+  * id
+  * name
+  * status
+  * updated\_at
 
 \---
 
@@ -1036,6 +1050,8 @@ interface ModelAdapter {
 * マクロ多用、動的ロード、多段生成コードでは解析精度が下がる
 * 画面遷移や DB 更新は推定になる場合がある
 * 信頼度と根拠の保持が必須
+* MVP では RDB を使用しない。データはすべて JSON ファイルとしてファイルシステム上で管理する
+* MVP では RAG（Retrieval-Augmented Generation）を使用しない。既存ドキュメント統合は今後の拡張案（§24）とする
 
 \---
 
@@ -1060,6 +1076,8 @@ interface ModelAdapter {
 * 解析結果は常に evidence を紐付ける
 * ユーザ補足情報はプロジェクトメタ情報として保持する
 * UI では「確定情報」と「推定情報」を分けて表示する
+* LLM で生成した PlantUML は必ず構文検証を行い、エラーがあれば LLM にエラー内容を渡して再生成させる（最大 3 回リトライ）
+* データ永続化は JSON ファイルベースとし、ORM / マイグレーションは使用しない
 
 \---
 
