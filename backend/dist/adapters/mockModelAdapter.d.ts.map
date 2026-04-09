@@ -1,0 +1,1 @@
+{"version":3,"file":"mockModelAdapter.d.ts","sourceRoot":"","sources":["../../src/adapters/mockModelAdapter.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,aAAa,EAAE,cAAc,EAAE,YAAY,EAAE,MAAM,mBAAmB,CAAC;AAErF;;;GAGG;AACH,qBAAa,gBAAiB,YAAW,YAAY;IAC7C,QAAQ,CAAC,KAAK,EAAE,aAAa,GAAG,OAAO,CAAC,cAAc,CAAC;IAsB7D,kBAAkB,IAAI,OAAO;IAI7B,mBAAmB,IAAI,OAAO;CAG/B"}

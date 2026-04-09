@@ -11,6 +11,30 @@ export const projectPaths = {
     return path.join(PROJECTS_BASE, projectId);
   },
 
+  inputDir(projectId: string): string {
+    return path.join(this.projectRoot(projectId), 'input');
+  },
+
+  outputDir(projectId: string): string {
+    return path.join(this.projectRoot(projectId), 'output');
+  },
+
+  outputJsonDir(projectId: string): string {
+    return path.join(this.outputDir(projectId), 'json');
+  },
+
+  outputPumlDir(projectId: string): string {
+    return path.join(this.outputDir(projectId), 'puml');
+  },
+
+  outputSvgDir(projectId: string): string {
+    return path.join(this.outputDir(projectId), 'svg');
+  },
+
+  outputMdDir(projectId: string): string {
+    return path.join(this.outputDir(projectId), 'md');
+  },
+
   metaDir(projectId: string): string {
     return path.join(this.projectRoot(projectId), 'meta');
   },
@@ -41,6 +65,10 @@ export const projectPaths = {
 
   chatMessagesFile(projectId: string): string {
     return path.join(this.chatDir(projectId), 'messages.json');
+  },
+
+  versionInputDir(projectId: string, versionId: string): string {
+    return path.join(this.inputDir(projectId), versionId);
   },
 
   projectIndexFile(): string {

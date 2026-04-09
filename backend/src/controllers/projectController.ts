@@ -2,6 +2,10 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { projectStore } from '../store/projectStore.js';
 import { projectVersionStore } from '../store/projectVersionStore.js';
+import { promptCatalog } from '../prompts/promptCatalog.js';
+import { artifactService } from '../services/artifactService.js';
+import type { PromptId } from '../services/documentGenerationService.js';
+import { fileService } from '../services/fileService.js';
 
 export const projectRouter = Router();
 
@@ -20,6 +24,25 @@ const createVersionSchema = z.object({
   label: z.string().min(1, 'Version label is required').max(100),
   // Store metadata first. The actual upload endpoint can be added next.
   upload_path: z.string().min(1, 'upload_path is required'),
+});
+
+const uploadFileSchema = z.object({
+  path: z.string().min(1, 'File path is required'),
+  content: z.string(),
+  encoding: z.enum(['utf8', 'base64']).optional(),
+});
+
+const uploadProjectSchema = z.object({
+  label: z.string().min(1).max(100).optional(),
+  files: z.array(uploadFileSchema).min(1, 'At least one file is required'),
+});
+
+const artifactPromptIds = Object.keys(promptCatalog) as [PromptId, ...PromptId[]];
+
+const generateArtifactSchema = z.object({
+  promptId: z.enum(artifactPromptIds),
+  variables: z.record(z.string(), z.string()),
+  modelId: z.string().min(1).optional(),
 });
 
 /**
@@ -117,6 +140,125 @@ projectRouter.post('/:id/versions', (req: Request, res: Response) => {
     project: updatedProject,
     version,
   });
+});
+
+/**
+ * POST /api/projects/:id/upload
+ * 複数ファイルを 1 つの version として保存する。
+ */
+projectRouter.post('/:id/upload', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const project = projectStore.findById(projectId);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found' });
+    return;
+  }
+
+  const parsed = uploadProjectSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation Error', details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const uploadResult = fileService.uploadProjectFiles({
+      projectId,
+      versionLabel: parsed.data.label ?? `upload-${new Date().toISOString()}`,
+      files: parsed.data.files,
+    });
+
+    const updatedProject = projectStore.findById(projectId);
+    res.status(201).json({
+      project: updatedProject,
+      version: uploadResult.version,
+      files: uploadResult.savedFiles,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Upload failed';
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/projects/:id/files
+ * active_version_id、または query の version_id を基準にファイル一覧を返す。
+ */
+projectRouter.get('/:id/files', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const project = projectStore.findById(projectId);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found' });
+    return;
+  }
+
+  const versionId = typeof req.query.version_id === 'string' ? req.query.version_id : undefined;
+
+  try {
+    const files = fileService.listProjectFiles(projectId, versionId);
+    res.json({
+      project_id: projectId,
+      version_id: versionId ?? project.active_version_id,
+      files,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to list files';
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/projects/:id/artifacts
+ * 保存済み成果物の一覧を返す。
+ */
+projectRouter.get('/:id/artifacts', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+
+  try {
+    const artifacts = artifactService.listArtifacts(projectId);
+    res.json({ artifacts });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to list artifacts';
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * GET /api/projects/:id/artifacts/:artifactId
+ * 成果物の中身とメタ情報を返す。
+ */
+projectRouter.get('/:id/artifacts/:artifactId', (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const artifactId = String(req.params.artifactId);
+
+  try {
+    const artifact = artifactService.getArtifact(projectId, artifactId);
+    res.json(artifact);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to get artifact';
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * POST /api/projects/:id/artifacts/regenerate
+ * prompt を使って成果物ドラフトを生成し、output 配下へ保存する。
+ */
+projectRouter.post('/:id/artifacts/regenerate', async (req: Request, res: Response) => {
+  const projectId = String(req.params.id);
+  const parsed = generateArtifactSchema.safeParse(req.body);
+
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation Error', details: parsed.error.issues });
+    return;
+  }
+
+  try {
+    const result = await artifactService.generateArtifactFromPrompt(projectId, parsed.data);
+    res.status(201).json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to generate artifact';
+    res.status(400).json({ error: message });
+  }
 });
 
 /**
